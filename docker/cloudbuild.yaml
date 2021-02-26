@@ -1,0 +1,9 @@
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  entrypoint: 'bash'
+  args: ['-c', '(docker pull gcr.io/simbricks/simbricks-builder:latest; docker pull gcr.io/simbricks/simbricks:latest) || exit 0']
+- name: 'gcr.io/cloud-builders/docker'
+  args: [ 'build', '-t', 'gcr.io/simbricks/simbricks-builder:latest', '--cache-from', ' gcr.io/simbricks/simbricks-builder:latest', '-f', 'docker/Dockerfile.builder', 'docker']
+- name: 'gcr.io/cloud-builders/docker'
+  args: [ 'build', '-t', 'gcr.io/simbricks/simbricks:latest', '--cache-from', ' gcr.io/simbricks/simbricks:latest', '-f', 'docker/Dockerfile', '.']
+images: ['gcr.io/simbricks/simbricks-builder:latest', 'gcr.io/simbricks/simbricks:latest']
