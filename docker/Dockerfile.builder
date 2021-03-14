@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y \
         python3-sphinx-rtd-theme \
         python3-breathe \
         breathe-doc \
+        wget \
     && rm -rf /var/lib/apt/lists/*
 RUN groupadd -g 1000 simbricks && \
     useradd -u 1000 -g simbricks -s /bin/bash -d /simbricks simbricks
