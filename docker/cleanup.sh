@@ -1,7 +1,6 @@
 #!/bin/sh
 
 cd /simbricks
-
 mkdir -p sims/external/qemu-keep/build/x86_64-softmmu
 mv sims/external/qemu/build/qemu-img sims/external/qemu-keep/build/
 mv sims/external/qemu/build/qemu-system-x86_64 sims/external/qemu-keep/build/
@@ -24,3 +23,5 @@ do
 done
 rm -rf sims/external/ns-3
 mv sims/external/ns-3-keep sims/external/ns-3
+
+rm -rf `find -name .git`
