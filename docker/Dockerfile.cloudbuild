@@ -1,0 +1,4 @@
+FROM gcr.io/simbricks/simbricks-builder
+COPY --chown=simbricks:simbricks . /simbricks
+USER simbricks:simbricks
+WORKDIR /simbricks/
