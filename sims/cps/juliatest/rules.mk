@@ -22,10 +22,19 @@
 
 include mk/subdir_pre.mk
 
-$(eval $(call subdir,cps))
-$(eval $(call subdir,external))
-$(eval $(call subdir,net))
-$(eval $(call subdir,nic))
-$(eval $(call subdir,tofino))
+lib_juliatest_simbricksadapter := $(d)libsimbricksadapter.so
+bin_juliatest_guest := $(d)cps_impl
 
+juliatest_libobjs := $(addprefix $(d),simbricksadapter.o)
+juliatest_implobjs := $(addprefix $(d),cps_impl.o vfio.o)
+
+OBJS := $(juliatest_libobjs) $(juliatest_implobjs)
+
+$(lib_juliatest_simbricksadapter): $(juliatest_libobjs) $(libsimbricks_objs)
+	$(CC) -shared -o $@ $^
+
+$(bin_juliatest_guest): $(juliatest_implobjs)
+
+CLEAN := $(lib_juliatest_simbricksadapter) $(bin_juliatest_guest) $(OBJS)
+ALL := $(lib_juliatest_simbricksadapter) $(bin_juliatest_guest)
 include mk/subdir_post.mk

@@ -22,10 +22,6 @@
 
 include mk/subdir_pre.mk
 
-$(eval $(call subdir,cps))
-$(eval $(call subdir,external))
-$(eval $(call subdir,net))
-$(eval $(call subdir,nic))
-$(eval $(call subdir,tofino))
+$(eval $(call subdir,juliatest))
 
 include mk/subdir_post.mk
