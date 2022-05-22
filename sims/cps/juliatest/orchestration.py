@@ -54,6 +54,19 @@ class JuliatestSim(sim.PCIDevSim):
              'y' if self.sync else 'n')
         return cmd
 
+class PythontestSim(sim.PCIDevSim):
+    sync = True
+
+    def __init__(self):
+        super().__init__()
+
+    def run_cmd(self, env):
+        cmd = 'python3 %s%s %s %s %s' % \
+            (env.repodir, '/sims/cps/juliatest/pythontest.py',
+             env.dev_pci_path(self), env.dev_shm_path(self),
+             'y' if self.sync else 'n')
+        return cmd
+
 
 # Set this to true to enable synchronization with qemu + instruction counting
 synchronized = False
