@@ -42,7 +42,7 @@ extern "C" {
 #include "sims/nic/corundum/debug.h"
 #include "sims/nic/corundum/dma.h"
 #include "sims/nic/corundum/mem.h"
-#include "sims/nic/corundum/obj_dir/Vinterface.h"
+#include "sims/nic/corundum/obj_dir/Vmqnic_interface.h"
 
 struct DMAOp;
 
@@ -71,7 +71,7 @@ double sc_time_stamp() {
   return main_time;
 }
 
-static void reset_inputs(Vinterface *top) {
+static void reset_inputs(Vmqnic_interface *top) {
   top->clk = 0;
   top->rst = 0;
   top->m_axis_ctrl_dma_read_desc_ready = 0;
@@ -138,7 +138,7 @@ static void report_output(const char *label, uint64_t val) {
   std::cout << "    " << label << " = " << val << std::endl;
 }
 
-static void report_outputs(Vinterface *top) {
+static void report_outputs(Vmqnic_interface *top) {
   report_output("m_axis_ctrl_dma_read_desc_dma_addr",
                 top->m_axis_ctrl_dma_read_desc_dma_addr);
   report_output("m_axis_ctrl_dma_read_desc_ram_sel",
@@ -238,14 +238,14 @@ class MMIOInterface {
     AddrDone,
   };
 
-  Vinterface &top;
+  Vmqnic_interface &top;
   PCICoordinator &coord;
   std::deque<MMIOOp *> queue;
   MMIOOp *rCur, *wCur;
   enum OpState rState, wState;
 
  public:
-  MMIOInterface(Vinterface &top_, PCICoordinator &coord_)
+  MMIOInterface(Vmqnic_interface &top_, PCICoordinator &coord_)
       : top(top_), coord(coord_), rCur(0), wCur(0) {
   }
 
@@ -587,12 +587,12 @@ static volatile union SimbricksProtoPcieD2H *d2h_alloc(void) {
 
 class EthernetTx {
  protected:
-  Vinterface &top;
+  Vmqnic_interface &top;
   uint8_t packet_buf[2048];
   size_t packet_len;
 
  public:
-  explicit EthernetTx(Vinterface &top_) : top(top_), packet_len(0) {
+  explicit EthernetTx(Vmqnic_interface &top_) : top(top_), packet_len(0) {
   }
 
   void packet_done() {
@@ -642,7 +642,7 @@ class EthernetTx {
 
 class EthernetRx {
  protected:
-  Vinterface &top;
+  Vmqnic_interface &top;
 
   static const size_t FIFO_SIZE = 32;
   uint8_t fifo_bufs[FIFO_SIZE][2048];
@@ -653,7 +653,7 @@ class EthernetRx {
   size_t packet_off;
 
  public:
-  explicit EthernetRx(Vinterface &top_)
+  explicit EthernetRx(Vmqnic_interface &top_)
       : top(top_), fifo_pos_rd(0), fifo_pos_wr(0), packet_off(0) {
     for (size_t i = 0; i < FIFO_SIZE; i++)
       fifo_lens[i] = 0;
@@ -781,7 +781,7 @@ void pci_msi_issue(uint8_t vec) {
                             SIMBRICKS_PROTO_PCIE_D2H_MSG_INTERRUPT);
 }
 
-static void msi_step(Vinterface &top, PCICoordinator &coord) {
+static void msi_step(Vmqnic_interface &top, PCICoordinator &coord) {
   if (!top.msi_irq)
     return;
 
@@ -854,7 +854,7 @@ int main(int argc, char *argv[]) {
   signal(SIGINT, sigint_handler);
   signal(SIGUSR1, sigusr1_handler);
 
-  Vinterface *top = new Vinterface;
+  Vmqnic_interface *top = new Vmqnic_interface;
 #ifdef TRACE_ENABLED
   trace = new VerilatedVcdC;
   top->trace(trace, 99);

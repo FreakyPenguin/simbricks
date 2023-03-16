@@ -26,8 +26,8 @@ include mk/subdir_pre.mk
 dir_corundum := $(d)
 bin_corundum := $(d)corundum_verilator
 verilator_dir_corundum := $(d)obj_dir
-verilator_src_corundum := $(verilator_dir_corundum)/Vinterface.cpp
-verilator_bin_corundum := $(verilator_dir_corundum)/Vinterface
+verilator_src_corundum := $(verilator_dir_corundum)/Vmqnic_interface.cpp
+verilator_bin_corundum := $(verilator_dir_corundum)/Vmqnic_interface
 
 vsrcs_corundum := $(wildcard $(d)rtl/*.v $(d)lib/*/rtl/*.v \
     $(d)lib/*/lib/*/rtl/*.v)
@@ -44,12 +44,13 @@ $(verilator_src_corundum): $(vsrcs_corundum)
 	    -y $(dir_corundum)lib/axi/rtl \
 	    -y $(dir_corundum)lib/eth/lib/axis/rtl/ \
 	    -y $(dir_corundum)lib/pcie/rtl \
-	    $(dir_corundum)rtl/interface.v --exe $(abspath $(srcs_corundum)) \
+	    $(dir_corundum)rtl/mqnic_interface.v \
+	    --exe $(abspath $(srcs_corundum)) \
 	      $(abspath $(lib_nicif) $(lib_netif) $(lib_pcie) $(lib_base))
 
 $(verilator_bin_corundum): $(verilator_src_corundum) $(srcs_corundum) \
     $(lib_nicif) $(lib_netif) $(lib_pcie) $(lib_base)
-	$(MAKE) -C $(verilator_dir_corundum) -f Vinterface.mk
+	$(MAKE) -C $(verilator_dir_corundum) -f Vmqnic_interface.mk
 
 $(bin_corundum): $(verilator_bin_corundum)
 	cp $< $@

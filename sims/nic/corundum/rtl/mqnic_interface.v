@@ -38,7 +38,7 @@ either expressed or implied, of The Regents of the University of California.
 /*
  * NIC Interface
  */
-module interface #
+module mqnic_interface #
 (
     // Number of ports
     parameter PORTS = 1,
