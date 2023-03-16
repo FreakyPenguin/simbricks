@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 module ram_blk #(
     parameter ADDR_BITS = 5,
     parameter DATA_BITS = 32

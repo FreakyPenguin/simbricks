@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 module cam_simple #(
     parameter DATA_WIDTH = 64,
     parameter ADDR_WIDTH = 5,

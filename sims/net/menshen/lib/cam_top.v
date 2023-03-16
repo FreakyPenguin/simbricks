@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 module cam_top #(
     parameter C_DEPTH = 16,
     parameter ADDR_BITS = 4,

@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 module blk_mem_gen_2 #(
     parameter ADDR_BITS = 5,
     parameter DATA_BITS = 38

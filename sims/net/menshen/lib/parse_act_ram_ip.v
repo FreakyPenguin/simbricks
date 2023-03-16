@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 module parse_act_ram_ip #(
     parameter ADDR_BITS = 5,
     parameter DATA_BITS = 160
