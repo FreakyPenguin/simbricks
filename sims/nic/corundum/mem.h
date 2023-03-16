@@ -34,18 +34,18 @@ class DMAOp;
 struct MemReadPort {
   /* outputs to memory */
   vluint8_t &mem_sel;
-  vluint32_t (&mem_addr)[3];
+  VlWide<3> &mem_addr;
   vluint8_t &mem_valid;
   vluint8_t &mem_resready;
 
   /* inputs from memory */
-  vluint32_t (&mem_data)[32];
+  VlWide<32> &mem_data;
   vluint8_t &mem_ready;
   vluint8_t &mem_resvalid; /* for read only */
 
-  MemReadPort(vluint8_t &mem_sel_, vluint32_t (&mem_addr_)[3],
+  MemReadPort(vluint8_t &mem_sel_, VlWide<3> &mem_addr_,
               vluint8_t &mem_valid_, vluint8_t &mem_resready_,
-              vluint32_t (&mem_data_)[32], vluint8_t &mem_ready_,
+              VlWide<32> &mem_data_, vluint8_t &mem_ready_,
               vluint8_t &mem_resvalid_)
       : mem_sel(mem_sel_),
         mem_addr(mem_addr_),
@@ -60,16 +60,16 @@ struct MemReadPort {
 struct MemWritePort {
   /* outputs to memory */
   vluint8_t &mem_sel;
-  vluint32_t (&mem_be)[4]; /* for write only */
-  vluint32_t (&mem_addr)[3];
-  vluint32_t (&mem_data)[32];
+  VlWide<4> &mem_be; /* for write only */
+  VlWide<3> &mem_addr;
+  VlWide<32> &mem_data;
   vluint8_t &mem_valid;
 
   /* inputs from memory */
   vluint8_t &mem_ready;
 
-  MemWritePort(vluint8_t &mem_sel_, vluint32_t (&mem_be_)[4],
-               vluint32_t (&mem_addr_)[3], vluint32_t (&mem_data_)[32],
+  MemWritePort(vluint8_t &mem_sel_, VlWide<4> &mem_be_,
+               VlWide<3> &mem_addr_, VlWide<32> &mem_data_,
                vluint8_t &mem_valid_, vluint8_t &mem_ready_)
       : mem_sel(mem_sel_),
         mem_be(mem_be_),
