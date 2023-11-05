@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import math
+import os
 import typing as tp
 
 from simbricks.orchestration.experiment.experiment_environment import ExpEnv
@@ -431,6 +432,13 @@ class Gem5Host(HostSim):
         self.extra_main_args = []
         self.extra_config_args = []
         self.variant = 'fast'
+        self.modify_checkpoint_tick = True
+        """Whether to modify the event queue tick of a restored checkpoint. When
+        this is enabled, the restored checkpoint will start at event queue tick
+        0. This is a performance optimization since now, connected simulators
+        don't have to simulate and synchronize until this tick before the actual
+        workload can be executed. Disable this if you need to retain the
+        differences in virtual time between multiple gem5 instances."""
 
     def resreq_cores(self) -> int:
         return 1
@@ -471,6 +479,8 @@ class Gem5Host(HostSim):
 
         if env.restore_cp:
             cmd += '-r 1 '
+            if self.modify_checkpoint_tick:
+                self._modify_cp_tick(env.gem5_cpdir(self), 0)
 
         for dev in self.pcidevs:
             cmd += (
@@ -507,6 +517,32 @@ class Gem5Host(HostSim):
 
         cmd += ' '.join(self.extra_config_args)
         return cmd
+
+    def _modify_cp_tick(self, cpdir: str, new_tick: int):
+        """Modify event queue tick of most recent checkpoint to `new_tick`"""
+        cp_file = None
+        max_tick = -1
+        for file in filter(
+            lambda file: file.startswith('cpt.'), os.listdir(cpdir)
+        ):
+            tick = int(file.split('.')[1])
+            if tick > max_tick:
+                max_tick = tick
+                cp_file = file
+
+        if cp_file:
+            file_path = f'{cpdir}/{cp_file}/m5.cpt'
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data: str = f.read()
+            newdata = data.replace(
+                f'curTick={max_tick}', f'curTick={new_tick}', 1
+            )
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(newdata)
+        else:
+            print(
+                f'WARN _modify_cp_tick(): No checkpoint exists for {self.name}'
+            )
 
 
 class SimicsHost(HostSim):
