@@ -60,6 +60,9 @@ class ExperimentBaseRunner(ABC):
         graph = collections.defaultdict(set)
         for sim in sims:
             deps = sim.dependencies() + sim.extra_deps
+            # Make sure even simulators without dependencies are added to the
+            # defaultset for the graph, by accessing them
+            graph[sim]
             for d in deps:
                 graph[sim].add(d)
         return graph
