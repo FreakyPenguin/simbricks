@@ -23,7 +23,7 @@
 include mk/subdir_pre.mk
 
 PACKER_VERSION := 1.7.0
-KERNEL_VERSION := 5.15.93
+KERNEL_VERSION := 5.17.7
 
 BASE_IMAGE := $(d)output-base/base
 MEMCACHED_IMAGE := $(d)output-memcached/memcached
