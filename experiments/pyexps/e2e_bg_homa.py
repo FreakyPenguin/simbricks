@@ -39,6 +39,7 @@ options = {
     'ns3::TcpSocket::SndBufSize': '524288',
     'ns3::TcpSocket::RcvBufSize': '524288',
     'ns3::Ipv4GlobalRouting::RandomEcmpRouting': '1',
+    'ns3::Ipv4L3Protocol::MayFragment': 'false',
 }
 
 topology = DCFatTree(
@@ -47,6 +48,7 @@ topology = DCFatTree(
             n_agg_sw=1,
             n_agg_racks=2,
             h_per_rack=1,
+            queue_type='ns3::HomaPFifoQueue',
         )
 add_homa_bg(topology, app_proto='ns3::HomaSocketFactory')
 
