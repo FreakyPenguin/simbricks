@@ -34,6 +34,7 @@ import os
 import pathlib
 import shlex
 import shutil
+import tarfile
 import typing as tp
 import uuid
 
@@ -122,6 +123,9 @@ class PackerImage(image_layers.LayeredDiskImage):
         path = pathlib.Path(inst.env.img_dir(f"build.{self.id()}"))
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def _boot_dir(self, inst: inst_base.Instantiation) -> pathlib.Path:
+        return pathlib.Path(inst.env.img_dir(f"boot.{self.id()}"))
 
     def _write_seed(self, scratch: pathlib.Path) -> list[str]:
         """Assemble the cloud-init seed, which packer attaches as a CD.
@@ -219,6 +223,9 @@ class PackerImage(image_layers.LayeredDiskImage):
         # previous attempt in this run may have left one.
         out_dir = scratch / "out"
         shutil.rmtree(out_dir, ignore_errors=True)
+        boot_tar = scratch / "boot.tar"
+        boot_tar.unlink(missing_ok=True)
+
         seed_files = self._write_seed(scratch)
         scripts, carries_files = self._lower_layers(inst, layers, scratch)
         cmds = []
@@ -240,6 +247,7 @@ class PackerImage(image_layers.LayeredDiskImage):
             "output": out_dir.as_posix(),
             "scripts": json.dumps(scripts),
             "input": input_tar.as_posix() if carries_files else "",
+            "boot_artifacts": boot_tar.as_posix(),
             "cleanup_script": (_DATA_DIR / "cleanup.sh").as_posix() if self.cleanup else "",
             "serial_log": (scratch / "serial.log").as_posix(),
             "disk_size": self.disk_size,
@@ -278,3 +286,42 @@ class PackerImage(image_layers.LayeredDiskImage):
                     )
                 ]
             )
+        self._unpack_boot_artifacts(inst, boot_tar)
+
+    # ---- boot artifacts ----------------------------------------------------
+
+    def _unpack_boot_artifacts(self, inst: inst_base.Instantiation, boot_tar: pathlib.Path) -> None:
+        """Unpack what the guest handed us. Downloaded during the build: the VM
+        is gone by the time a simulator asks."""
+        out_dir = self._boot_dir(inst)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(boot_tar) as tar:
+            for member in tar.getmembers():
+                name = pathlib.PurePosixPath(member.name).name
+                if not member.isfile() or not name:
+                    continue
+                source = tar.extractfile(member)
+                assert source is not None
+                with source, open(out_dir / name, "wb") as dst:
+                    shutil.copyfileobj(source, dst)
+        boot_tar.unlink(missing_ok=True)
+
+    async def boot_artifacts(
+        self, inst: inst_base.Instantiation, kinds: list[disk_images.BootArtifact]
+    ) -> dict[disk_images.BootArtifact, str]:
+        if not kinds:
+            return {}
+        out_dir = self._boot_dir(inst)
+        artifacts = {}
+        for kind in kinds:
+            path = out_dir / kind.value
+            if not path.is_file():
+                msg = f"'{kind.value}' was not in the built image."
+                if kind is disk_images.BootArtifact.VMLINUX:
+                    msg += (
+                        " An uncompressed vmlinux comes from the kernel's debug"
+                        " package; add a layer that installs it."
+                    )
+                raise RuntimeError(msg)
+            artifacts[kind] = path.as_posix()
+        return artifacts
