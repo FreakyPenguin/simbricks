@@ -30,6 +30,8 @@ packer backend instead.
 from __future__ import annotations
 
 import asyncio
+import csv
+import json
 import os
 import pathlib
 import re
@@ -82,6 +84,10 @@ def _require(exe: str) -> str:
     return exe
 
 
+_SECTOR_BYTES = 512
+# What a GPT backup header needs at the end of the disk.
+_GPT_TAIL_SECTORS = 34
+
 # Where in the guest the debug kernel's uncompressed ELF lives.
 _VMLINUX_DIR = "/usr/lib/debug/boot"
 
@@ -94,6 +100,8 @@ class GuestfsImage(image_layers.LayeredDiskImage):
         self.virt_customize_exec = "virt-customize"
         self.qemu_img_exec = "qemu-img"
         self.virt_ls_exec = "virt-ls"
+        self.guestfish_exec = "guestfish"
+        self.virt_filesystems_exec = "virt-filesystems"
         self.virt_copy_out_exec = "virt-copy-out"
 
     def available_formats(self) -> list[str]:
@@ -104,6 +112,8 @@ class GuestfsImage(image_layers.LayeredDiskImage):
         json_obj["virt_customize_exec"] = self.virt_customize_exec
         json_obj["qemu_img_exec"] = self.qemu_img_exec
         json_obj["virt_ls_exec"] = self.virt_ls_exec
+        json_obj["guestfish_exec"] = self.guestfish_exec
+        json_obj["virt_filesystems_exec"] = self.virt_filesystems_exec
         json_obj["virt_copy_out_exec"] = self.virt_copy_out_exec
         return json_obj
 
@@ -113,6 +123,10 @@ class GuestfsImage(image_layers.LayeredDiskImage):
         instance.virt_customize_exec = utils_base.get_json_attr_top(json_obj, "virt_customize_exec")
         instance.qemu_img_exec = utils_base.get_json_attr_top(json_obj, "qemu_img_exec")
         instance.virt_ls_exec = utils_base.get_json_attr_top(json_obj, "virt_ls_exec")
+        instance.guestfish_exec = utils_base.get_json_attr_top(json_obj, "guestfish_exec")
+        instance.virt_filesystems_exec = utils_base.get_json_attr_top(
+            json_obj, "virt_filesystems_exec"
+        )
         instance.virt_copy_out_exec = utils_base.get_json_attr_top(json_obj, "virt_copy_out_exec")
         return instance
 
@@ -173,6 +187,73 @@ class GuestfsImage(image_layers.LayeredDiskImage):
                 raise RuntimeError(f"GuestfsImage cannot build layer {type(layer).__name__}")
         return args
 
+    async def _capture(self, cmd: list[str]) -> str:
+        """Run a tool we need the output of, rather than the log."""
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"'{shlex.join(cmd)}' failed: {stderr.decode(errors='replace')}"
+            )
+        return stdout.decode(errors="replace")
+
+    async def _virtual_size(self, image: str) -> int:
+        out = await self._capture(
+            [_require(self.qemu_img_exec), "info", "--output=json", image]
+        )
+        return int(json.loads(out)["virtual-size"])
+
+    async def _partition_to_grow(self, image: str) -> tuple[int, bool]:
+        """The partition to give the extra space to, and whether the table is GPT.
+
+        The biggest one: on a cloud image the root filesystem dwarfs the boot
+        partitions, and it is the one sitting at the end of the disk.
+        """
+        out = await self._capture(
+            _env()
+            + [_require(self.virt_filesystems_exec), "--parts", "--long", "--csv", "-a", image]
+        )
+        rows = list(csv.reader(out.splitlines()))
+        # Columns: Name, Type, MBR, Size, Parent. MBR is empty on a GPT disk.
+        parts = [r for r in rows[1:] if len(r) > 3 and r[3].isdigit()]
+        if not parts:
+            raise RuntimeError(f"no partitions to expand in '{image}'")
+        biggest = max(parts, key=lambda r: int(r[3]))
+        number = re.search(r"(\d+)$", biggest[0])
+        if number is None:
+            raise RuntimeError(f"cannot tell the partition number of '{biggest[0]}'")
+        return int(number.group(1)), not biggest[2]
+
+    async def _grow_cmds(self, source: str, image: str, wanted: int) -> list[str]:
+        """Grow @image to @wanted bytes, its biggest partition, and the ext
+        filesystem on it. The layout is read from @source, the base image the
+        copy is made from, because @image does not exist yet.
+
+        In place, so that partition numbers do not change: virt-resize copies
+        into a new image and renumbers by disk offset, which on a cloud image
+        moves the root partition and breaks a simulator booting /dev/sda1.
+        """
+        number, gpt = await self._partition_to_grow(source)
+        device = f"/dev/sda{number}"
+        # Leave the last sectors for the GPT backup header, which parted needs
+        # room for. Harmless on an MBR disk.
+        end_sector = wanted // _SECTOR_BYTES - _GPT_TAIL_SECTORS
+        guestfish = [_require(self.guestfish_exec), "-a", image, "--rw", "run"]
+        if gpt:
+            # The backup header still sits where the disk used to end.
+            guestfish += [":", "part-expand-gpt", "/dev/sda"]
+        guestfish += [
+            ":", "part-resize", "/dev/sda", str(number), str(end_sector),
+            ":", "e2fsck-f", device,
+            ":", "resize2fs", device,
+        ]
+        return [
+            shlex.join([_require(self.qemu_img_exec), "resize", "-q", image, str(wanted)]),
+            shlex.join(_env() + guestfish),
+        ]
+
     async def build(
         self,
         inst: inst_base.Instantiation,
@@ -188,6 +269,9 @@ class GuestfsImage(image_layers.LayeredDiskImage):
         cmds = [
             shlex.join([_require(self.qemu_img_exec), "convert", "-O", format, base_path, partial])
         ]
+        wanted = image_layers.parse_size(self.disk_size) if self.disk_size else 0
+        if wanted > await self._virtual_size(base_path):
+            cmds += await self._grow_cmds(base_path, partial, wanted)
         args = self._layer_args(inst, layers, scratch)
         if args:
             cmds.append(
