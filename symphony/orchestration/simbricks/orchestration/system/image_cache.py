@@ -148,8 +148,11 @@ class ImageCache:
     def _place(self, source: str, target: pathlib.Path) -> None:
         """Put a copy of @source at @target, atomically and cheaply if possible."""
         target.parent.mkdir(parents=True, exist_ok=True)
+        # Whatever a run that died mid-copy left behind. Only reachable holding
+        # the entry's lock, so nobody else's copy is in flight.
+        for leftover in target.parent.glob(f".{target.name}.*"):
+            leftover.unlink(missing_ok=True)
         staged = target.with_name(f".{target.name}.{os.getpid()}")
-        staged.unlink(missing_ok=True)
         try:
             # A hard link so an image is stored and taken out without copying
             # gigabytes. Safe because nothing writes to an image in place: a
