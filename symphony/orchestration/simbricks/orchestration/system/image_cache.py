@@ -169,6 +169,16 @@ class ImageCache:
     def store_boot_artifact(self, digest: str, name: str, path: str) -> None:
         self._place(path, self._entry(digest) / "boot" / name)
 
-    def take_out(self, cached: str, target: str) -> None:
-        """Put a cached file where this run wants it."""
-        self._place(cached, pathlib.Path(target))
+    def take_out(self, cached: str, target: str) -> bool:
+        """Put a cached file where this run wants it. False if it is gone.
+
+        It can be gone: on a shared filesystem the entry may have been evicted
+        by another machine since it was looked up, and an NFS client can be
+        told about that only after it has cached the directory. The caller
+        treats that as a miss rather than an error.
+        """
+        try:
+            self._place(cached, pathlib.Path(target))
+        except OSError:
+            return False
+        return True

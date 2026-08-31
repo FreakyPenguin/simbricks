@@ -308,7 +308,7 @@ class LayeredDiskImage(disk_images.DynamicDiskImage, utils_base.InputArtifactSou
         """
         for done in range(len(self.layers) - 1, -1, -1):
             start = cache.image(hashes[done], format)
-            if start is None:
+            if start is None or not pathlib.Path(start).is_file():
                 continue
             cache.used(hashes[done])
             await self._run_build(inst, format, start, self.layers[done:], out)
@@ -330,8 +330,7 @@ class LayeredDiskImage(disk_images.DynamicDiskImage, utils_base.InputArtifactSou
             # waits for this one rather than building it again.
             async with cache.locked(hashes[-1]):
                 cached = cache.image(hashes[-1], format)
-                if cached is not None:
-                    cache.take_out(cached, out)
+                if cached is not None and cache.take_out(cached, out):
                     cache.used(hashes[-1])
                     return
                 await self._build_cached(inst, format, out, cache, hashes)
@@ -370,8 +369,9 @@ class LayeredDiskImage(disk_images.DynamicDiskImage, utils_base.InputArtifactSou
             async with cache.locked(digest):
                 for kind in list(wanted):
                     cached = cache.boot_artifact(digest, kind.value)
-                    if cached is not None:
-                        cache.take_out(cached, (out_dir / kind.value).as_posix())
+                    if cached is not None and cache.take_out(
+                        cached, (out_dir / kind.value).as_posix()
+                    ):
                         wanted.remove(kind)
                 if wanted:
                     await self._produce_boot_artifacts(inst, wanted, out_dir)
