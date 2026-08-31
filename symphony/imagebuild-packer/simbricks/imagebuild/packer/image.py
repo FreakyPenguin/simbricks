@@ -29,6 +29,7 @@ guestfs backend avoids -- prefer it unless a booted guest is the point.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import pathlib
@@ -72,7 +73,6 @@ class PackerImage(image_layers.LayeredDiskImage):
         self.qemu_binary = "qemu-system-x86_64"
         self.accelerator: str | None = None
         """Passed to packer. None picks kvm where the runner has it, else tcg."""
-        self.disk_size = "8G"
         self.memory = 2048
         self.cpus = 2
         self.ssh_username = "ubuntu"
@@ -92,7 +92,6 @@ class PackerImage(image_layers.LayeredDiskImage):
         json_obj["qemu_img_exec"] = self.qemu_img_exec
         json_obj["qemu_binary"] = self.qemu_binary
         json_obj["accelerator"] = self.accelerator
-        json_obj["disk_size"] = self.disk_size
         json_obj["memory"] = self.memory
         json_obj["cpus"] = self.cpus
         json_obj["ssh_username"] = self.ssh_username
@@ -108,7 +107,6 @@ class PackerImage(image_layers.LayeredDiskImage):
         instance.qemu_img_exec = utils_base.get_json_attr_top(json_obj, "qemu_img_exec")
         instance.qemu_binary = utils_base.get_json_attr_top(json_obj, "qemu_binary")
         instance.accelerator = utils_base.get_json_attr_top_or_none(json_obj, "accelerator")
-        instance.disk_size = utils_base.get_json_attr_top(json_obj, "disk_size")
         instance.memory = utils_base.get_json_attr_top(json_obj, "memory")
         instance.cpus = utils_base.get_json_attr_top(json_obj, "cpus")
         instance.ssh_username = utils_base.get_json_attr_top(json_obj, "ssh_username")
@@ -200,6 +198,30 @@ class PackerImage(image_layers.LayeredDiskImage):
 
         return scripts, carries_files
 
+    async def _disk_size(self, base_path: str) -> str:
+        """What to give packer, which resizes the copy it boots.
+
+        Always a concrete size: packer has a default of its own, and letting
+        that apply would silently grow images nobody asked to grow. Never below
+        the base's own size, which packer would refuse anyway. In megabytes with
+        the suffix, because packer reads a bare number as megabytes.
+        """
+        proc = await asyncio.create_subprocess_exec(
+            _require(self.qemu_img_exec),
+            "info",
+            "--output=json",
+            base_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"could not read '{base_path}': {stderr.decode(errors='replace')}")
+        base_size = int(json.loads(stdout)["virtual-size"])
+        wanted = image_layers.parse_size(self.disk_size) if self.disk_size else 0
+        megabytes = -(-max(base_size, wanted) // (1 << 20))
+        return f"{megabytes}M"
+
     def _ssh_timeout(self) -> str:
         if self.ssh_timeout is not None:
             return self.ssh_timeout
@@ -250,7 +272,7 @@ class PackerImage(image_layers.LayeredDiskImage):
             "boot_artifacts": boot_tar.as_posix(),
             "cleanup_script": (_DATA_DIR / "cleanup.sh").as_posix() if self.cleanup else "",
             "serial_log": (scratch / "serial.log").as_posix(),
-            "disk_size": self.disk_size,
+            "disk_size": await self._disk_size(base_path),
             "memory": str(self.memory),
             "cpus": str(self.cpus),
             "qemu_binary": self.qemu_binary,
