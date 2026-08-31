@@ -101,6 +101,10 @@ class GuestfsImage(image_layers.LayeredDiskImage):
         self.qemu_img_exec = "qemu-img"
         self.virt_ls_exec = "virt-ls"
         self.guestfish_exec = "guestfish"
+        self.grow_filesystem = True
+        """Whether disk_size grows the filesystem too, not just the disk and its
+        partition. False for a filesystem this cannot grow: do it in a layer
+        instead, where the guest's own tools are available."""
         self.virt_filesystems_exec = "virt-filesystems"
         self.virt_copy_out_exec = "virt-copy-out"
 
@@ -113,6 +117,7 @@ class GuestfsImage(image_layers.LayeredDiskImage):
         json_obj["qemu_img_exec"] = self.qemu_img_exec
         json_obj["virt_ls_exec"] = self.virt_ls_exec
         json_obj["guestfish_exec"] = self.guestfish_exec
+        json_obj["grow_filesystem"] = self.grow_filesystem
         json_obj["virt_filesystems_exec"] = self.virt_filesystems_exec
         json_obj["virt_copy_out_exec"] = self.virt_copy_out_exec
         return json_obj
@@ -124,6 +129,7 @@ class GuestfsImage(image_layers.LayeredDiskImage):
         instance.qemu_img_exec = utils_base.get_json_attr_top(json_obj, "qemu_img_exec")
         instance.virt_ls_exec = utils_base.get_json_attr_top(json_obj, "virt_ls_exec")
         instance.guestfish_exec = utils_base.get_json_attr_top(json_obj, "guestfish_exec")
+        instance.grow_filesystem = utils_base.get_json_attr_top(json_obj, "grow_filesystem")
         instance.virt_filesystems_exec = utils_base.get_json_attr_top(
             json_obj, "virt_filesystems_exec"
         )
@@ -205,37 +211,67 @@ class GuestfsImage(image_layers.LayeredDiskImage):
         )
         return int(json.loads(out)["virtual-size"])
 
-    async def _partition_to_grow(self, image: str) -> tuple[int, bool]:
-        """The partition to give the extra space to, and whether the table is GPT.
+    async def _partition_to_grow(self, image: str) -> tuple[int, bool, str]:
+        """The partition to give the extra space to: its number, whether the
+        table is GPT, and the filesystem on it.
 
         The biggest one: on a cloud image the root filesystem dwarfs the boot
         partitions, and it is the one sitting at the end of the disk.
         """
         out = await self._capture(
             _env()
-            + [_require(self.virt_filesystems_exec), "--parts", "--long", "--csv", "-a", image]
+            + [_require(self.virt_filesystems_exec), "--all", "--long", "--csv", "-a", image]
         )
         rows = list(csv.reader(out.splitlines()))
-        # Columns: Name, Type, MBR, Size, Parent. MBR is empty on a GPT disk.
-        parts = [r for r in rows[1:] if len(r) > 3 and r[3].isdigit()]
+        if not rows:
+            raise RuntimeError(f"could not read the partitions of '{image}'")
+        column = {name: index for index, name in enumerate(rows[0])}
+        listed = [r for r in rows[1:] if len(r) == len(rows[0])]
+
+        parts = [r for r in listed if r[column["Type"]] == "partition"]
         if not parts:
             raise RuntimeError(f"no partitions to expand in '{image}'")
-        biggest = max(parts, key=lambda r: int(r[3]))
-        number = re.search(r"(\d+)$", biggest[0])
+        biggest = max(parts, key=lambda r: int(r[column["Size"]]))
+        number = re.search(r"(\d+)$", biggest[column["Name"]])
         if number is None:
-            raise RuntimeError(f"cannot tell the partition number of '{biggest[0]}'")
-        return int(number.group(1)), not biggest[2]
+            raise RuntimeError(f"cannot tell the partition number of '{biggest[column['Name']]}'")
+
+        vfs = ""
+        for row in listed:
+            if row[column["Type"]] == "filesystem" and row[column["Name"]] == biggest[
+                column["Name"]
+            ]:
+                vfs = row[column["VFS"]]
+        # The MBR column is empty on a GPT disk.
+        return int(number.group(1)), not biggest[column["MBR"]], vfs
+
+    def _filesystem_grow_cmds(self, device: str, vfs: str) -> list[str]:
+        """guestfish fragment growing the filesystem into the resized partition.
+
+        ext can be grown offline; xfs and btrfs only grow what is mounted.
+        """
+        if vfs.startswith("ext"):
+            return [":", "e2fsck-f", device, ":", "resize2fs", device]
+        if vfs == "xfs":
+            return [":", "mount", device, "/", ":", "xfs-growfs", "/"]
+        if vfs == "btrfs":
+            return [":", "mount", device, "/", ":", "btrfs-filesystem-resize", "/"]
+        raise RuntimeError(
+            f"cannot grow a '{vfs}' filesystem on '{device}'. Set grow_filesystem = False"
+            " to grow only the disk and its partition, and grow the filesystem yourself in"
+            " a layer, where the guest's own tools are available."
+        )
 
     async def _grow_cmds(self, source: str, image: str, wanted: int) -> list[str]:
-        """Grow @image to @wanted bytes, its biggest partition, and the ext
-        filesystem on it. The layout is read from @source, the base image the
-        copy is made from, because @image does not exist yet.
+        """Grow @image to @wanted bytes, its biggest partition, and the filesystem
+        on it. The layout is read from @source, the base image the copy is made
+        from, because @image does not exist yet.
 
         In place, so that partition numbers do not change: virt-resize copies
         into a new image and renumbers by disk offset, which on a cloud image
         moves the root partition and breaks a simulator booting /dev/sda1.
         """
-        number, gpt = await self._partition_to_grow(source)
+        number, gpt, vfs = await self._partition_to_grow(source)
         device = f"/dev/sda{number}"
         # Leave the last sectors for the GPT backup header, which parted needs
         # room for. Harmless on an MBR disk.
@@ -244,11 +280,9 @@ class GuestfsImage(image_layers.LayeredDiskImage):
         if gpt:
             # The backup header still sits where the disk used to end.
             guestfish += [":", "part-expand-gpt", "/dev/sda"]
-        guestfish += [
-            ":", "part-resize", "/dev/sda", str(number), str(end_sector),
-            ":", "e2fsck-f", device,
-            ":", "resize2fs", device,
-        ]
+        guestfish += [":", "part-resize", "/dev/sda", str(number), str(end_sector)]
+        if self.grow_filesystem:
+            guestfish += self._filesystem_grow_cmds(device, vfs)
         return [
             shlex.join([_require(self.qemu_img_exec), "resize", "-q", image, str(wanted)]),
             shlex.join(_env() + guestfish),
