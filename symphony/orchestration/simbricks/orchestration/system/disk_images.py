@@ -23,16 +23,18 @@
 from __future__ import annotations
 
 import abc
-import hashlib
 import asyncio
+import hashlib
 import enum
 import io
 import pathlib
 import tarfile
 import typing as tp
+import urllib.request
 
 import typing_extensions as tpe
 
+from simbricks.orchestration.system import image_cache
 from simbricks.utils import base as utils_base
 
 if tp.TYPE_CHECKING:
@@ -270,6 +272,50 @@ class ExternalDiskImage(DiskImage):
         return instance
 
 
+class ExternalDiskImageArtifact(ExternalDiskImage, utils_base.InputArtifactSource):
+    """A disk image on the submitting machine, shipped to the runner with the run.
+
+    For a base image small enough to travel inside the run event, which is how
+    input artifacts are carried. Anything sizeable belongs in an HttpDiskImage
+    or in the runner's global input directory.
+    """
+
+    def __init__(self, system: sys_base.System, path: str, boot_dir: str | None = None) -> None:
+        super().__init__(system, pathlib.Path(path).resolve().as_posix(), boot_dir)
+        # Name it has inside the artifact, which is currently packed flat
+        self.artifact_file_name: str = pathlib.PurePath(self._path).name
+
+    def input_artifact_files(self) -> list[str]:
+        return [self._path]
+
+    def path(self, inst: inst_base.Instantiation, format: str) -> str:
+        shipped = pathlib.Path(inst.env.input_artifacts_dir(), self.artifact_file_name)
+        if shipped.exists():
+            return shipped.as_posix()
+        # A local run builds no input artifact: the image is where it was picked up.
+        return super().path(inst, format)
+
+    def content_hash(self, inst: inst_base.Instantiation) -> str:
+        # By content rather than the usual size and mtime: this arrives unpacked
+        # afresh for every run, so its path and timestamps say nothing about
+        # whether it is the same image as last time.
+        with open(self.path(inst, ""), "rb") as handle:
+            return hash_strings(["external-artifact", hash_file(handle)])
+
+    def toJSON(self) -> dict:
+        json_obj = super().toJSON()
+        json_obj["artifact_file_name"] = self.artifact_file_name
+        return json_obj
+
+    @classmethod
+    def fromJSON(cls, system: sys_base.System, json_obj: dict) -> tpe.Self:
+        instance = super().fromJSON(system, json_obj)
+        instance.artifact_file_name = utils_base.get_json_attr_top(
+            json_obj, "artifact_file_name"
+        )
+        return instance
+
+
 # Disk images shipped with simbricks
 class DistroDiskImage(DiskImage):
     def __init__(self, system: sys_base.System, name: str) -> None:
@@ -337,6 +383,113 @@ class DynamicDiskImage(DiskImage):
     @classmethod
     def fromJSON(cls, system: sys_base.System, json_obj: dict) -> tpe.Self:
         return super().fromJSON(system, json_obj)
+
+
+class HttpDiskImage(DynamicDiskImage):
+    """A base image the runner downloads, rather than one it already has.
+
+    The download is cached like a build is, so a run pays for it once per URL
+    and checksum however many runs use it.
+    """
+
+    def __init__(
+        self,
+        system: sys_base.System,
+        url: str,
+        checksum: str | None = None,
+        format: str = "qcow2",
+        boot_dir: str | None = None,
+    ) -> None:
+        super().__init__(system)
+        self.url = url
+        # "sha256:..." or any algorithm hashlib knows. None downloads whatever is
+        # served now and reuses it for as long as the URL is unchanged.
+        self.checksum = checksum
+        # What the URL serves. Nothing here converts: core has no qemu-img, and a
+        # layered image built on this converts as it builds anyway.
+        self.format = format
+        self.boot_dir: str | None = boot_dir
+
+    def available_formats(self) -> list[str]:
+        return [self.format]
+
+    def content_hash(self, inst: inst_base.Instantiation) -> str:
+        return hash_strings(["http", self.url, self.checksum or ""])
+
+    async def boot_artifacts(
+        self, inst: inst_base.Instantiation, kinds: list[BootArtifact]
+    ) -> dict[BootArtifact, str]:
+        if not kinds:
+            return {}
+        if self.boot_dir is None:
+            raise RuntimeError(
+                f"cannot provide boot artifacts {[k.value for k in kinds]} for '{self.url}':"
+                " pass boot_dir= naming a directory on the runner holding them, build a"
+                " layered image on this one, or set the simulator's kernel path explicitly"
+            )
+        boot_dir = pathlib.Path(inst.env.work_dir_or_abs(self.boot_dir))
+        artifacts = {}
+        for kind in kinds:
+            path = (boot_dir / kind.value).as_posix()
+            DiskImage.assert_is_file(path)
+            artifacts[kind] = path
+        return artifacts
+
+    def _fetch(self, out: str) -> None:
+        """Download to @out, hashing on the way through. Runs in a thread."""
+        algorithm, _, expected = (self.checksum or "").partition(":")
+        if self.checksum and not expected:
+            algorithm, expected = "sha256", algorithm
+        digest = hashlib.new(algorithm) if self.checksum else None
+
+        partial = f"{out}.partial"
+        with urllib.request.urlopen(self.url) as response, open(partial, "wb") as target:
+            while chunk := response.read(1 << 20):
+                target.write(chunk)
+                if digest is not None:
+                    digest.update(chunk)
+
+        if digest is not None and digest.hexdigest() != expected.lower():
+            pathlib.Path(partial).unlink(missing_ok=True)
+            raise RuntimeError(
+                f"'{self.url}' does not have the expected {algorithm} checksum:"
+                f" got {digest.hexdigest()}, expected {expected.lower()}"
+            )
+        # Only now is it a whole image, and only now does it get the real name.
+        pathlib.Path(partial).rename(out)
+
+    async def _prepare_format(self, inst: inst_base.Instantiation, format: str) -> None:
+        if format != self.format:
+            raise RuntimeError(
+                f"'{self.url}' is a {self.format} image, and nothing here converts it to"
+                f" {format}. Build a layered image on it to get another format."
+            )
+        out = self.path(inst, format)
+        async with inst.prepare_lock(out):
+            if pathlib.Path(out).is_file():
+                return
+
+            async def download() -> None:
+                await asyncio.to_thread(self._fetch, out)
+
+            await image_cache.prepare_cached(inst, self.content_hash(inst), format, out, download)
+
+    def toJSON(self) -> dict:
+        json_obj = super().toJSON()
+        json_obj["url"] = self.url
+        json_obj["checksum"] = self.checksum
+        json_obj["format"] = self.format
+        json_obj["boot_dir"] = self.boot_dir
+        return json_obj
+
+    @classmethod
+    def fromJSON(cls, system: sys_base.System, json_obj: dict) -> tpe.Self:
+        instance = super().fromJSON(system, json_obj)
+        instance.url = utils_base.get_json_attr_top(json_obj, "url")
+        instance.checksum = utils_base.get_json_attr_top_or_none(json_obj, "checksum")
+        instance.format = utils_base.get_json_attr_top(json_obj, "format")
+        instance.boot_dir = utils_base.get_json_attr_top_or_none(json_obj, "boot_dir")
+        return instance
 
 
 # Builds the Tar with the commands to run etc.
