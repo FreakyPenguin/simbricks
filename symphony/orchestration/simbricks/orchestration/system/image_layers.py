@@ -269,10 +269,6 @@ class LayeredDiskImage(disk_images.DynamicDiskImage, utils_base.InputArtifactSou
         available = self.base.available_formats()
         return format if format in available else available[0]
 
-    def _cache(self, inst: inst_base.Instantiation) -> image_cache.ImageCache | None:
-        root = inst.env.image_cache_dir()
-        return image_cache.ImageCache(root) if root is not None else None
-
     async def _build_from_base(self, inst: inst_base.Instantiation, format: str, out: str) -> None:
         # The base is not attached to a host, so nothing else prepares it.
         base_format = self._base_format(format)
@@ -320,27 +316,17 @@ class LayeredDiskImage(disk_images.DynamicDiskImage, utils_base.InputArtifactSou
         async with inst.prepare_lock(out):
             if pathlib.Path(out).is_file():
                 return
-            cache = self._cache(inst)
+            cache = image_cache.for_instantiation(inst)
             if cache is None:
                 await self._build_from_base(inst, format, out)
                 return
 
             hashes = self.prefix_hashes(inst)
-            # Held across the build, so a second run wanting the same image
-            # waits for this one rather than building it again.
-            async with cache.locked(hashes[-1]):
-                cached = cache.image(hashes[-1], format)
-                if cached is not None and cache.take_out(cached, out):
-                    cache.used(hashes[-1])
-                    return
+
+            async def build() -> None:
                 await self._build_cached(inst, format, out, cache, hashes)
-                cache.store_image(hashes[-1], format, out)
-                cache.used(hashes[-1])
-            limit = inst.env.image_cache_size()
-            if limit is not None:
-                # After a store, the only moment the cache grows. What was just
-                # built is the most recently used, so it is never the casualty.
-                cache.evict(limit)
+
+            await image_cache.prepare_cached(inst, hashes[-1], format, out, build)
 
     async def boot_artifacts(
         self, inst: inst_base.Instantiation, kinds: list[disk_images.BootArtifact]
@@ -353,7 +339,7 @@ class LayeredDiskImage(disk_images.DynamicDiskImage, utils_base.InputArtifactSou
             return {}
         out_dir = pathlib.Path(inst.env.img_dir(f"boot.{self.id()}"))
         out_dir.mkdir(parents=True, exist_ok=True)
-        cache = self._cache(inst)
+        cache = image_cache.for_instantiation(inst)
         digest = self.content_hash(inst) if cache is not None else ""
 
         async with inst.prepare_lock(out_dir.as_posix()):

@@ -37,8 +37,50 @@ import pathlib
 import shutil
 import typing as tp
 
+if tp.TYPE_CHECKING:
+    from simbricks.orchestration.instantiation import base as inst_base
+
 
 _USED = ".used"
+
+
+def for_instantiation(inst: inst_base.Instantiation) -> "ImageCache | None":
+    """The cache this run should use, or None when it was not given one."""
+    root = inst.env.image_cache_dir()
+    return ImageCache(root) if root is not None else None
+
+
+async def prepare_cached(
+    inst: inst_base.Instantiation,
+    digest: str,
+    format: str,
+    out: str,
+    produce: tp.Callable[[], tp.Awaitable[None]],
+) -> None:
+    """Put the image for @digest at @out, calling @produce only if it is not cached.
+
+    The lock is held across the lookup and the production, so a second run
+    wanting the same image waits for this one instead of repeating it.
+    """
+    cache = for_instantiation(inst)
+    if cache is None:
+        await produce()
+        return
+
+    async with cache.locked(digest):
+        cached = cache.image(digest, format)
+        if cached is not None and cache.take_out(cached, out):
+            cache.used(digest)
+            return
+        await produce()
+        cache.store_image(digest, format, out)
+        cache.used(digest)
+
+    limit = inst.env.image_cache_size()
+    if limit is not None:
+        # After a store, the only moment the cache grows. What was just put
+        # there is the most recently used, so it is never the casualty.
+        cache.evict(limit)
 
 
 class ImageCache:
