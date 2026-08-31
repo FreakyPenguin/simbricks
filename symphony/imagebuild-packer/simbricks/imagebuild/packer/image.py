@@ -328,22 +328,22 @@ class PackerImage(image_layers.LayeredDiskImage):
                     shutil.copyfileobj(source, dst)
         boot_tar.unlink(missing_ok=True)
 
-    async def boot_artifacts(
-        self, inst: inst_base.Instantiation, kinds: list[disk_images.BootArtifact]
-    ) -> dict[disk_images.BootArtifact, str]:
-        if not kinds:
-            return {}
-        out_dir = self._boot_dir(inst)
-        artifacts = {}
-        for kind in kinds:
-            path = out_dir / kind.value
-            if not path.is_file():
-                msg = f"'{kind.value}' was not in the built image."
-                if kind is disk_images.BootArtifact.VMLINUX:
-                    msg += (
-                        " An uncompressed vmlinux comes from the kernel's debug"
-                        " package; add a layer that installs it."
-                    )
-                raise RuntimeError(msg)
-            artifacts[kind] = path.as_posix()
-        return artifacts
+    async def _produce_boot_artifacts(
+        self,
+        inst: inst_base.Instantiation,
+        kinds: list[disk_images.BootArtifact],
+        out_dir: pathlib.Path,
+    ) -> None:
+        # The build downloads these from the guest, so reaching here means the
+        # image came from the cache and its entry does not have them.
+        missing = [k.value for k in kinds]
+        msg = (
+            f"{missing} not available for this image: packer collects boot artifacts while"
+            " it builds, and this image was not built in this run."
+        )
+        if disk_images.BootArtifact.VMLINUX in kinds:
+            msg += (
+                " An uncompressed vmlinux also needs the kernel's debug package"
+                " installed by a layer."
+            )
+        raise RuntimeError(msg)

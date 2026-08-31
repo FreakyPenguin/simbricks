@@ -347,41 +347,34 @@ class GuestfsImage(image_layers.LayeredDiskImage):
             raise RuntimeError(f"no /boot/vmlinuz-* in '{image}'")
         return versions[-1]
 
-    async def boot_artifacts(
-        self, inst: inst_base.Instantiation, kinds: list[disk_images.BootArtifact]
-    ) -> dict[disk_images.BootArtifact, str]:
-        if not kinds:
-            return {}
+    async def _produce_boot_artifacts(
+        self,
+        inst: inst_base.Instantiation,
+        kinds: list[disk_images.BootArtifact],
+        out_dir: pathlib.Path,
+    ) -> None:
         image = self._built_image(inst)
-        out_dir = pathlib.Path(inst.env.img_dir(f"boot.{self.id()}"))
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        async with inst.prepare_lock(out_dir.as_posix()):
-            wanted = [k for k in kinds if not (out_dir / k.value).is_file()]
-            if wanted:
-                version = await self._kernel_version(image)
-                # What each kind is called inside the guest.
-                guest_names = {
-                    disk_images.BootArtifact.VMLINUZ: f"/boot/vmlinuz-{version}",
-                    disk_images.BootArtifact.INITRD: f"/boot/initrd.img-{version}",
-                    disk_images.BootArtifact.VMLINUX: f"{_VMLINUX_DIR}/vmlinux-{version}",
-                }
-                # One copy-out for all: the appliance boot is the cost, not the
-                # number of files.
-                cmd = _env() + [_require(self.virt_copy_out_exec), "-a", image]
-                cmd += [guest_names[k] for k in wanted]
-                cmd += [out_dir.as_posix()]
-                await inst.command_executor.exec_prepare_cmds([shlex.join(cmd)])
-                for kind in wanted:
-                    src = out_dir / pathlib.PurePosixPath(guest_names[kind]).name
-                    if not src.is_file():
-                        msg = f"'{guest_names[kind]}' is not in this image."
-                        if kind is disk_images.BootArtifact.VMLINUX:
-                            msg += (
-                                " An uncompressed vmlinux comes from the kernel's debug"
-                                " package; add a layer that installs it."
-                            )
-                        raise RuntimeError(msg)
-                    src.rename(out_dir / kind.value)
-
-        return {k: (out_dir / k.value).as_posix() for k in kinds}
+        version = await self._kernel_version(image)
+        # What each kind is called inside the guest.
+        guest_names = {
+            disk_images.BootArtifact.VMLINUZ: f"/boot/vmlinuz-{version}",
+            disk_images.BootArtifact.INITRD: f"/boot/initrd.img-{version}",
+            disk_images.BootArtifact.VMLINUX: f"{_VMLINUX_DIR}/vmlinux-{version}",
+        }
+        # One copy-out for all: the appliance boot is the cost, not the number
+        # of files.
+        cmd = _env() + [_require(self.virt_copy_out_exec), "-a", image]
+        cmd += [guest_names[k] for k in kinds]
+        cmd += [out_dir.as_posix()]
+        await inst.command_executor.exec_prepare_cmds([shlex.join(cmd)])
+        for kind in kinds:
+            src = out_dir / pathlib.PurePosixPath(guest_names[kind]).name
+            if not src.is_file():
+                msg = f"'{guest_names[kind]}' is not in this image."
+                if kind is disk_images.BootArtifact.VMLINUX:
+                    msg += (
+                        " An uncompressed vmlinux comes from the kernel's debug"
+                        " package; add a layer that installs it."
+                    )
+                raise RuntimeError(msg)
+            src.rename(out_dir / kind.value)
